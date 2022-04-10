@@ -1,0 +1,116 @@
+---
+title: "Network Analytics"
+author: "Michelle Skaf"
+date: "10/21/2021"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install packages
+library("igraph")
+library("ggplot2")
+library("dplyr")
+library("skimr")
+require("knitr")
+setwd("~/Documents/MSBA2022/Network/data")
+
+#TGraph edge
+graph_complete <- read.graph(file="graph_complete.txt", format ="ncol",directed=T)
+#Subset of complete network, containing only products with sales rank < 1,000
+#Directed
+graph_subset_Direct <- read.graph(file="graph_subset_rank1000.txt", format ="ncol",directed=T)
+#Not Directed
+graph_subset_Undirect <- read.graph(file="graph_subset_rank1000.txt", format ="ncol",directed=F)
+
+#Largest connected component in the network of products with sales rank < 1,000
+#Directed
+graph_subset_cc <- read.graph(file="graph_subset_rank1000_cc.txt", format ="ncol",directed=T)
+#Not Directed
+graph_subset_cc_Undirect <- read.graph(file="graph_subset_rank1000_cc.txt", format ="ncol",directed=F)
+
+graph_complete_txt <- read.csv(file="graph_complete.txt",sep=" ",header=FALSE)
+id_to_title<- read.csv(file="id_to_titles.txt",sep=" ",header=TRUE)
+#Each line edge is where each node is separated with space
+#Data set includes 1,355 product nodes and has 2,611 co-purchase edge
+graph_subset_Undirect
+```
+
+```{r}
+#Counting nodes
+ecount(graph_subset_Undirect)
+#Counting edges
+vcount(graph_subset_Undirect)
+is.directed(graph_subset_Undirect)
+```
+
+```{r}
+#Plot graph of a subset of edges between top-ranked products
+plot.igraph(graph_subset_Undirect,layout = layout.kamada.kawai,vertex.label=NA,vertex.size=3,vertex.color='green')
+```
+
+
+```{r}
+#Plot graph of subset of edges between top-ranked products largest connected component in the above network
+plot.igraph(graph_subset_cc_Undirect ,layout = layout.kamada.kawai,vertex.label=NA,vertex.size=4,vertex.color='green')
+```
+
+```{r}
+#1.Plot the out-degree distribution of our data set (x-axis number of similar products, y-axis number of nodes)
+Inbound_Degree = unique(graph_complete_txt$V1)
+Outbound_Degree = unique(graph_complete_txt$V2)
+Joint_Degree = unique(append(Inbound_Degree,Outbound_Degree))
+
+Out_degree= factor(graph_complete_txt$V1,levels = Joint_Degree)
+dens=data.frame(table(Out_degree))
+
+ggplot(dens,aes(x=Freq))+geom_histogram(binwidth  =1 ,fill = 'green') + theme_light() + labs(title = 'Out-Degree Distribution')
+```
+
+```{r}
+#plot the in-degree distribution of our data set (x-axis number of similar products,
+#y-axis number of nodes)
+In_Degree = factor(graph_complete_txt$V2,levels = Joint_Degree)
+dens2=data.frame(table(In_Degree))
+
+
+ggplot(dens2,aes(x=Freq))+geom_histogram(binwidth  =1 ,fill = 'green') + theme_light() + labs(title = 'In-Degree Distribution')
+```
+
+```{r}
+ggplot(dens2,aes(x=Freq))+geom_histogram(binwidth  =1 ,fill = 'green') + theme_light() + labs(title = 'In-Degree Distribution') + xlim(-1,30)
+#Warning
+#Removed 2353 rows containing non-finite values (stat_bin).
+#Removed 2 rows containing missing values (geom_bar).
+```
+
+```{r}
+#transform the x-axis of the previous graph to log scale
+#(to get a better understanding of the distribution)
+#with 0 inbound links --> the log of the x-axis will fail since log(0) will not be valid, replacing 0 with 0.1
+denslog = dens2 %>% mutate(Freq=ifelse(dens2$Freq==0,0.1,dens2$Freq)) %>% mutate(Freq=log10(Freq))
+
+ggplot(denslog,aes(x=Freq))+geom_histogram(binwidth = 0.25 ,fill = 'green') + theme_light() + labs(title = 'LOG In-Degree Distribution')
+```
+
+```{r}
+#Compute average number of inbound
+skim(dens2)
+```
+
+```{r}
+summary(dens2)
+```
+
+```{r}
+#Report ten product names with most inbound co-purchase link
+product_name = merge(dens2,id_to_title,by.x = 'In_Degree', by.y =  'id')
+product_name = product_name[order(product_name$Freq,decreasing = TRUE),]
+product_name[1:10,'title']
+```
+

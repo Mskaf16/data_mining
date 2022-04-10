@@ -1,0 +1,22 @@
+---
+title: "SAC_Assignment3"
+author: "Michelle Skaf"
+date: "3/9/2022"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+library(readr)
+HDLData <- read_csv("HDL Data.csv")
+```
+
+```{r, include = TRUE}
+HD2000 <- lm(formula = HDcount ~ as.factor(r2) + log(pop_2000) + log(income_2000) + pct_U18_2000 + pctcollege_2000 + ownhome_2000 + density_2000 + pctwhite_2000 + pctblack_2000, data=HDLData)
+summary(HD2000)
+```
+
+
+```{r, include=TRUE}
+L2000 <- lm(formula = Lcount ~ as.factor(r2) + log(pop_2000) + log(income_2000) + pct_U18_2000 + pctcollege_2000 + ownhome_2000 + density_2000 + pctwhite_2000 + pctblack_2000, data=HDLData)
+summary(L2000)
+```
