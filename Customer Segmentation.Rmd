@@ -1,0 +1,158 @@
+---
+title: "Classic Retail Customer Segmentation"
+author: "Michelle Skaf"
+date: "8/23/2021"
+output: html_document
+---
+
+```{r message = FALSE, results = FALSE, results = 'hide'}
+
+#If document rendering becomes time consuming due to long computations you can use knitr caching to improve performance.
+library(knitr)
+opts_chunk$set(cache = TRUE)
+
+required_packages = c( 
+  # Add to this list the packages that you will use - if unavailable, it will be 
+  # automatically installed
+  
+  "rmarkdown", 
+  "dplyr",
+  "readr",
+  "tidyr",
+  "knitr",
+  "data.table",
+  "lubridate",
+  "rlang",
+  "ggplot2",
+  "cluster",
+  "skimr", 
+  "GGally"
+    )
+
+packages_to_install = required_packages[!(required_packages %in% 
+                                                installed.packages()[, 1])]
+    
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install)
+}
+
+suppressPackageStartupMessages({
+  sapply(required_packages, require, character.only = TRUE)
+})
+```
+
+#import data 
+
+
+```{r message = FALSE, warning = FALSE}
+setwd("~/Documents/MSBA2022/DataMining")
+customerRFM <- read_csv('CA-customerData.csv')
+```
+
+
+
+```{r}
+str(customerRFM)
+```
+
+
+
+$$
+X' = \frac{X - X_{min}}{X_{max} - X_{min}}
+$$
+
+
+
+```{r}
+# Function to perform min-max normalization
+mmnormalize <- function(x){
+  n_max <- max(x, na.rm = TRUE)
+  n_min <- min(x, na.rm = TRUE)
+  mmnormalized <- (x - n_min)/(n_max - n_min)
+  return(mmnormalized)
+}
+```
+
+
+```{r}
+customerRFM_for_clustering <- select(customerRFM,-"ID#")
+customerRFM_for_clustering  <- mutate_all(customerRFM,.funs = mmnormalize)
+
+skim(customerRFM_for_clustering)
+
+```
+
+
+```{r warning = FALSE}
+SSE_curve <- c()
+for (n in 1:10) {
+    kcluster <- kmeans(customerRFM_for_clustering, centers = n, nstart = 10)
+    sse <- sum(kcluster$withinss)
+    SSE_curve[n] <- sse
+}
+
+print("SSE curve for the ideal k value")
+#plot(1:10, SSE_curve, type="b", xlab="Number of Clusters", ylab="SSE")
+ggplot(data = data.frame(k = 1:10, sse = SSE_curve), aes(x = k, y = sse)) + 
+  geom_line() + 
+  geom_point(size = 3) + 
+  ggtitle("SSE curve for different values of k") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_discrete(limits = 1:10) + 
+  xlab("Number of clusters")
+
+```
+
+
+```{r message = FALSE, warning = FALSE}
+# Set seed for reproducible results - this ensures that we get the same results
+# every time we run the code
+set.seed(42)
+
+#Perform k-means algorithm to identify 6 distinct clusters
+km_all <- kmeans(customerRFM_for_clustering,
+                 centers = 4,
+                 nstart = 10)
+```
+
+
+```{r}
+customerRFM <- bind_cols(customerRFM, data.frame(cluster = km_all$cluster))
+head(customerRFM)
+```
+
+
+```{r message = FALSE, warning = FALSE}
+segment_df <- customerRFM %>% 
+  mutate(segment = as.factor(cluster))
+```
+
+
+```{r}
+ggplot(segment_df, aes(x = segment)) +
+  geom_bar(aes(y = (..count..)/sum(..count..), fill = segment)) + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage of customers") + 
+  xlab("Segment")
+```
+
+
+```{r}
+segment_summary <- segment_df %>% group_by(segment) %>% summarise(mean_monetary = mean(Monetary), 
+                                               mean_recency = mean(Recency),
+                                               mean_frequency = mean(Frequency),
+                                               mean_tenure = mean(tenure),
+                                               n = n())
+
+segment_summary
+```
+
+
+
+```{r}
+
+ggparcoord(segment_summary,
+    columns = 2:5, groupColumn = 1) 
+```
+
+

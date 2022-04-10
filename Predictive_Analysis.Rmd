@@ -1,0 +1,538 @@
+---
+title: "Predictive Analytics"
+author: "Michelle Skaf"
+date: "8/24/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/Documents/MSBA2022/DataMining")
+```
+
+```{r message=FALSE,  warning=FALSE}
+# load the required libraries
+library("readxl") # used to read excel files
+library("dplyr") # used for data munging 
+library("FNN") # used for knn regression (knn.reg function)
+library("caret") # used for various predictive models
+library("class") # for using confusion matrix function
+library("rpart.plot") # used to plot decision tree
+library("rpart")  # used for Regression tree
+library("glmnet") # used for Lasso and Ridge regression
+library('NeuralNetTools') # used to plot Neural Networks
+library("PRROC") # top plot ROC curve
+library("ROCR") # top plot lift curve
+library("tidyverse")
+library("skimr")
+```
+
+
+
+\newpage
+
+# 1. Regression
+
+## 1.1 Data loading and transformation
+
+Please make sure that you have Spending_data.xlsx in your working directory.
+
+This dataset contains data about whether or not different consumers made a purchase in response to a test mailing of a certain catalog and, in case of a purchase, how much money each consumer spent. 
+
+The data file has a brief description of all the attributes in 2nd worksheet (Codes). Note that this dataset has two possible outcome variables: Purchase (0/1 value: whether or not the purchase was made) and Spending (numeric value: amount spent).
+We will focus on predicting how much a person spends, not the binary of whether they will purchase or not. 
+
+```{r}
+# read Spending_data.xlsx into a data frame called spending
+spending_data <- read_excel("Spending_data.xlsx", sheet = "All Data")
+skim(spending_data)
+
+
+```
+
+```{r}
+# create a data frame with response or outcome variable 
+y = spending_data %>% select("Spending")
+
+
+# create a data frame with predictor variable (exclude unnecessary columns ) 
+x = spending_data %>% select(-c("Spending", "Purchase", "sequence_number") )
+
+
+```
+
+
+Create a function that normalizes columns since scale for each column might be different.
+
+```{r }
+# function to normalize data (0 to 1)
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+```
+
+
+```{r}
+# Normalize x variables since they are at different scale
+# note you have to exclude the factor variables from this
+x_normalized <- as.data.frame(lapply(x , normalize))
+```
+
+
+```{r}
+# take a look at top 5 records from x and y
+head(x_normalized)
+head(y)
+```
+
+
+### 1.1.1 Partition Data
+
+```{r}
+# set the seed to make the partition reproducible
+set.seed(1234) 
+
+# 75% of data is used for training and the rest for testing model performace
+smp_size <- floor(0.75 * nrow(x))
+
+# randomly select row numbers for training data set
+train_ind <- sample(seq_len(nrow(x)), size = smp_size)
+```
+
+```{r}
+# creating test and training sets for x
+x_train <- as.data.frame(x[train_ind, ])
+x_test <- as.data.frame(x[-train_ind, ])
+
+
+# creating test and training sets for y
+y_train <- as.data.frame(y[train_ind, ])
+y_test <- as.data.frame(y[-train_ind, ])
+
+# Create an empty data frame to store results from different models
+reg_results <- data.frame(matrix(ncol = 3, nrow = 0))
+names(reg_results) <- c("Model", "MAE", "RMSE")
+
+```
+
+
+Create function for calculating Mean Absolute Error
+
+```{r}
+MAE <- function(actual_values, predictions){
+  round(mean(abs(actual_values - predictions)),2)
+}
+```
+
+Create function for calculating Root Mean Squared Error (RMSE)
+
+```{r}
+
+RMSE <- function(actual_values, predictions){
+  
+  SSE = sum((actual_values -predictions)^2)
+  RMSE = sqrt(SSE/length(predictions))
+  return (round(RMSE,2))
+}
+```
+
+
+## 1.2 KNN regression
+
+
+Caret library do not have the functionality to run KNN regression. Hence, we use FNN library which has knn.reg function. In order to decide best value of k (number of neighbours considered), we need to try different values of k and select the model with lowest RMSE. 
+
+There are several rules of thumb to choose k, one being the square root of the number of observations in the training set. (k = sqrt(1500))
+
+```{r}
+
+
+x_train_knn_norm <- as.data.frame(x_normalized[train_ind, ])
+x_test_knn_norm <- as.data.frame(x_normalized[-train_ind, ])
+
+
+# creating test and training sets for y
+y_train <- as.data.frame(y[train_ind, ])
+y_test <- as.data.frame(y[-train_ind, ])
+# k = number of neighbours considered
+knn_reg <- knn.reg(x_train_knn_norm,x_test_knn_norm, y_train, k = 39)
+```
+
+```{r}
+## print predicted values
+head(knn_reg$pred)
+```
+
+Plot the prediction and actual values. If the values were perfectly predicted, we would expect to see points along the y = x line (the lower-left to upper-right diagonal if the scales on each axis of the plot are the same). 
+
+```{r}
+
+plot(y_test$Spending, knn_reg$pred, xlab="y", ylab=expression(hat(y)))
+```
+
+```{r}
+# Evaluate model using MAE and RMSE
+cat("MAE for KNN is", MAE(y_test$Spending, knn_reg$pred), "\n")
+cat("RMSE for KNN is", RMSE(y_test$Spending, knn_reg$pred ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "KNN reg", 
+                                             MAE = MAE(y_test$Spending,knn_reg$pred ), 
+                                            RMSE = RMSE(y_test$Spending,knn_reg$pred))
+```
+
+## 1.3 Regression Tree
+
+
+```{r message=FALSE,  warning=FALSE}
+
+# Cross validation
+cross_validation <- trainControl(## 10-fold CV
+                                method = "repeatedcv",
+                                number = 10,
+                                ## repeated three times
+                                repeats = 3)
+# Hyperparamter tuning
+# maxdepth =  the maximum depth of the tree that will be created or
+# the length of the longest path from the tree root to a leaf.
+
+Param_Grid <-  expand.grid(maxdepth = 2:20)
+
+
+reg_tree_fit <- train(x_train,
+                       y_train$Spending,
+                       method = "rpart2",
+                       parms = list(split = "information"),
+                        tuneGrid = Param_Grid,
+                        trControl = cross_validation)
+ 
+
+
+
+prp(reg_tree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+## prediction on test data
+reg_tree_pred <- predict(reg_tree_fit, x_test)
+```
+
+```{r}
+# Evaluate model using MAE and RMSE
+cat("MAE for Regression Tree is", MAE(y_test$Spending,reg_tree_pred ), "\n")
+cat("RMSE for Regression Tree is", RMSE(y_test$Spending,reg_tree_pred ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Reg Tree", 
+                                             MAE = MAE(y_test$Spending,reg_tree_pred ), 
+                                            RMSE =  RMSE(y_test$Spending,reg_tree_pred))
+```
+
+
+
+## 1.4 Linear regression
+
+### 1.4.1 Linear regression with out regularization
+
+```{r}
+# preProc -  perform listed pre-processing to predictor data
+linear_fit <- train(x_train,
+               y_train$Spending,
+               method = "lm",
+               preProc = c("center", "scale"))
+
+# prediction on test data
+linear_pred <- predict(linear_fit, x_test)
+```
+
+```{r}
+# Evaluate model using MAE and RMSE
+cat("MAE for Linear regression is", MAE(y_test$Spending,linear_pred ), "\n")
+cat("RMSE for Linear regression is", RMSE(y_test$Spending,linear_pred ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Linear reg", 
+                                             MAE = MAE(y_test$Spending,linear_pred ), 
+                                            RMSE =  RMSE(y_test$Spending,linear_pred ))
+```
+
+```{r}
+# Plot linear model along with predicted and actual test data
+my_data = as.data.frame(cbind(predicted = linear_pred,
+                              observed = y_test$Spending))
+
+ggplot(my_data,aes(predicted, observed)) +
+  geom_point(color = "darkred", alpha = 0.5) + 
+  geom_smooth(method=lm)+
+  ggtitle("Linear Regression: Prediction vs Test Data") +
+  xlab("Predicted values ") +
+  ylab("Actual test data") +
+  theme(plot.title = element_text(color="black",size=14,hjust = 0.5),
+        axis.text.y = element_text(size=12),
+        axis.text.x = element_text(size=12,hjust=.5),
+        axis.title.x = element_text(size=14),
+        axis.title.y = element_text(size=14))
+```
+
+### 1.4.2 Ridge regression
+
+```{r}
+# select range of lamdas 
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+
+# Setting alpha = 0 implements ridge regression
+ridge_cv <- cv.glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                      alpha = 0, lambda = lambdas_to_try, 
+                      standardize = TRUE)
+```
+
+```{r}
+# plot MSE vs Log(lambda)
+plot(ridge_cv)
+```
+
+```{r}
+# select the best cross-validated lambda
+lambda_cv <- ridge_cv$lambda.min
+
+cat("Best lambda for Ridge Regression (alpha = 0)  is", lambda_cv)
+
+# Train the model using best lamda
+model_ridge_cv <- glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                   alpha = 0, lambda = lambda_cv, standardize = TRUE)
+
+# prediction on test data
+ridge_predict <- predict(model_ridge_cv, x_test %>% as.matrix())
+```
+
+```{r}
+# Evaluate model using MAE and RMSE
+cat("MAE for Ridge regression is", MAE(y_test$Spending,ridge_predict ))
+cat("RMSE for Ridge regression is", RMSE(y_test$Spending,ridge_predict ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Ridge reg", 
+                                             MAE = MAE(y_test$Spending,ridge_predict ), 
+                                            RMSE =  RMSE(y_test$Spending,ridge_predict ))
+```
+
+
+### 2.4.3 Lasso regression
+
+```{r}
+# select range of lamdas 
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+
+
+# Setting alpha = 1 implements Lasso regression
+lasso_cv <- cv.glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                      alpha = 1, lambda = lambdas_to_try, 
+                      standardize = TRUE)
+```
+
+```{r}
+# Plot cross-validation results
+plot(lasso_cv)
+```
+
+```{r}
+# select the best cross-validated lambda
+lambda_cv <- lasso_cv$lambda.min
+
+cat("Best lambda for Lasso Regression (alpha = 1)  is", lambda_cv, "\n")
+
+# Train the model using best lamda
+model_lamda_cv <- glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                   alpha = 1, lambda = lambda_cv, standardize = TRUE)
+
+#lets see the coefficients lasso kept and the ones it dropped!
+#looks ike we are left with 19 of 23 coefficients
+coef(model_lamda_cv)
+
+# prediction on test data
+lasso_predict <- predict(model_lamda_cv, x_test %>% as.matrix())
+
+# Evaluate model using MAE and RMSE
+cat("MAE for Lasso regression is", MAE(y_test$Spending,lasso_predict ), "\n")
+cat("RMSE for Lasso regression is", RMSE(y_test$Spending,lasso_predict ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Lasso reg", 
+                                             MAE = MAE(y_test$Spending,lasso_predict ), 
+                                            RMSE =  RMSE(y_test$Spending,lasso_predict ))
+```
+
+### 2.4.4 Elastic Net
+
+Elastic Net is a combination of both Ridge and Lasso regression. we have to select alpha value between 0 and 1. 
+
+We can try Elastic net with 2 different alpha value which are 0.2 and 0.8
+
+#### 2.4.4.1 Elastic Net with alpha = 0.2
+
+```{r}
+# select range of lamdas 
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+
+
+# Setting alpha = 0.2 implements Elastic net regression
+elastic_cv_0.2 <- cv.glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                        alpha = 0.2, lambda = lambdas_to_try, 
+                        standardize = TRUE)
+```
+
+```{r}
+# Plot cross-validation results for elasticn net with alpha = 0.2
+plot(elastic_cv_0.2)
+```
+
+```{r}
+# select the best cross-validated lambda
+lambda_cv <- elastic_cv_0.2$lambda.min
+
+cat("Best lambda for Elastic Net (alpha = 0.2)  is", lambda_cv, "\n")
+
+# Train the model using best lamda
+model_elastic_cv_0.2 <- glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                           alpha = 0.2, lambda = lambda_cv, standardize = TRUE)
+
+# prediction on test data
+elastic_predict_0.2 <- predict(model_elastic_cv_0.2, x_test %>% as.matrix())
+
+# Evaluate model using MAE and RMSE
+cat("MAE for Elastic Net (alpha = 0.2) is", MAE(y_test$Spending,elastic_predict_0.2 ), "\n")
+cat("RMSE for Elastic Net (alpha = 0.2) is", RMSE(y_test$Spending,elastic_predict_0.2 ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Elastic 0.2", 
+                                        MAE = MAE(y_test$Spending,elastic_predict_0.2 ), 
+                                        RMSE =  RMSE(y_test$Spending,elastic_predict_0.2 ))
+```
+
+#### 2.4.4.2 Elastic Net with alpha = 0.8
+
+Now, lets try Elastic net with alpha value = 0.8
+
+```{r}
+# select range of lamdas 
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+
+
+# Setting alpha = 0.8 implements Elastic net regression
+elastic_cv_0.8 <- cv.glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                        alpha = 0.8, lambda = lambdas_to_try, 
+                        standardize = TRUE)
+```
+
+```{r}
+# Plot cross-validation results for elasticn net with alpha = 0.8
+plot(elastic_cv_0.8)
+```
+
+```{r}
+# select the best cross-validated lambda
+lambda_cv <- elastic_cv_0.8$lambda.min
+
+cat("Best lambda for Elastic Net (alpha = 0.8)  is", lambda_cv, "\n")
+
+# Train the model using best lamda
+model_elastic_cv_0.8 <- glmnet(x_train %>% as.matrix(), y_train$Spending %>% as.matrix(), 
+                           alpha = 0.8, lambda = lambda_cv, standardize = TRUE)
+
+# prediction on test data
+elastic_predict_0.8 <- predict(model_elastic_cv_0.8, x_test %>% as.matrix())
+
+# Evaluate model using MAE and RMSE
+cat("MAE for Elastic Net (alpha = 0.8) is", MAE(y_test$Spending,elastic_predict_0.8 ), "\n")
+cat("RMSE for Elastic Net (alpha = 0.8) is", RMSE(y_test$Spending,elastic_predict_0.8 ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Elastic 0.8", 
+                                        MAE = MAE(y_test$Spending,elastic_predict_0.8 ), 
+                                        RMSE =  RMSE(y_test$Spending,elastic_predict_0.8 ))
+```
+
+
+## 1.6 XGBoost regression
+
+```{r message=FALSE,  warning=FALSE} 
+XG_reg_fit <- train(x_train,y_train$Spending,
+                    method = "xgbTree")
+```
+
+```{r }
+# prediction on test data
+XG_reg_pred = predict(XG_reg_fit, x_test)
+```
+
+```{r }
+# Evaluate model using MAE and RMSE
+cat("MAE for XGBoost regression is", MAE(y_test$Spending,XG_reg_pred ), "\n")
+cat("RMSE for XGBoost regression is", RMSE(y_test$Spending,XG_reg_pred ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "XGBoost reg", 
+                                             MAE = MAE(y_test$Spending,XG_reg_pred ), 
+                                            RMSE =  RMSE(y_test$Spending,XG_reg_pred ))
+```
+
+
+## 1.7 Neural Network regression
+
+```{r message=FALSE,  warning=FALSE}
+
+# Try different combinations of parameters like 
+# decay (prevents the weights from growing too large) 
+# and size of Hidden layers
+my.grid <- expand.grid(.decay = c(0.5, 0.1), .size = c(5, 7))
+
+# lineout = 1 for regression
+# stepmax is maximum steps for the training of the neural network
+# threshold is set to 0.01, meaning that if the change in error during an iteration is 
+# less than 1%, then no further optimization will be carried out by the model
+
+nn_reg_fit <- train(x_train,y_train$Spending,
+                      method = "nnet",
+                      threshold=0.01,
+                      stepmax = 100,
+                      trace = F, linout = 1,
+                      tuneGrid = my.grid)  
+
+print(nn_reg_fit)
+
+# Plotting neural network
+plotnet(nn_reg_fit$finalModel, y_names = "Spending")
+```
+
+```{r }
+# prediction on test data
+nn_predict <- predict(nn_reg_fit, newdata = x_test)
+```
+
+```{r }
+# Evaluate model using MAE and RMSE
+cat("MAE for Neural Network is", MAE(y_test$Spending,nn_predict), "\n")
+cat("RMSE for Neural Network is", RMSE(y_test$Spending,nn_predict ))
+
+# Add results into reg_results dataframe
+reg_results[nrow(reg_results) + 1,] <-  list(Model = "Neural Net", 
+                                             MAE = MAE(y_test$Spending,nn_predict ), 
+                                            RMSE =  RMSE(y_test$Spending,nn_predict ))
+```
+
+**Compare RMSE for all Regression models **
+
+```{r }
+
+print(reg_results)
+
+# Plot RMSE for all the Regression Models
+
+ggplot(reg_results %>% arrange(RMSE) %>%
+       mutate(Model=factor(Model, levels=Model) ), 
+       aes(x = Model, y = RMSE)) +
+  geom_bar(stat = "identity" , width=0.3, fill="steelblue") + 
+  coord_cartesian(ylim = c(95, 160)) +
+  geom_hline(aes(yintercept = mean(RMSE)),
+             colour = "green",linetype="dashed") +
+  ggtitle("Compare RMSE for all Models (lower the better)") +
+  theme(plot.title = element_text(color="black", size=10, hjust = 0.5))
+
+```

@@ -1,0 +1,372 @@
+---
+title: "Income Prediction - Credit card offer or denail"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/Documents/MSBA2022/DataMining")
+```
+
+
+```{r message=FALSE,  warning=FALSE}
+library("tidyverse")
+library("skimr")
+library("readxl") # used to read excel files
+library("dplyr") # used for data munging 
+library("FNN") # used for knn regression (knn.reg function)
+library("caret") # used for various predictive models
+library("class") # for using confusion matrix function
+library("rpart.plot") # used to plot decision tree
+library("rpart")  # used for Regression tree
+library("glmnet") # used for Lasso and Ridge regression
+library('NeuralNetTools') # used to plot Neural Networks
+library("PRROC") # top plot ROC curve
+library("ROCR") # top plot lift curve
+library("dummies")
+```
+
+
+# 1. Classification
+
+
+## 1.1 Data loading,  exploration and preparation for modeling
+
+There are customers with known income and those without known income (the training and test sets respectively). The data contain 48842 instances with a mix of continuous and discrete (train=32561, test=16281) in two files named “CL-income-train.csv” (this is the same as your homework file 'CL-income.xlsx') and “test.csv” respectively. Lets load the training data
+
+```{r }
+# Load the training data
+
+#read the CSV file into a data frame 'income_df'
+income_df_train <- read_csv("train-baggle.csv", col_types = "nffnfffffnff")
+
+# function to normalize data (0 to 1)
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+# lets look at all the variables
+skim(income_df_train)
+
+#do some exploratory analysis of the categorical features of the data
+
+income_df_train %>%  keep(is.factor) %>%  summary()
+
+# There are few features with more than 6 levels.
+# We use the table() function to get the distribution for their values.
+table(select(income_df_train, workClassification))
+table(select(income_df_train, educationLevel))
+table(select(income_df_train, occupation))
+table(select(income_df_train, nativeCountry))
+
+# There are missing values for workClassification, nativeCountry and occupation.
+# The missing values are represented by an indicator variable of '?'.
+# Let's replace these with 'UNK' instead.
+
+income_df_train <- income_df_train %>%
+  mutate(workClassification = recode(workClassification, "?" = "UNK")) %>%
+  mutate(nativeCountry = recode(nativeCountry, "?" = "UNK")) %>%
+  mutate(occupation = recode(occupation, "?" = "UNK"))
+
+# What do we now have?
+table(select(income_df_train, workClassification))
+table(select(income_df_train, occupation))
+table(select(income_df_train, nativeCountry))
+
+# What do we now have?
+summary(income_df_train[,"income"])
+
+# create Y and X data frames
+#we will need the y column as a vector (X to be a dataframe)
+# dplyr allows us to do this by using 'pull' instead of select
+income_df_train_y = income_df_train %>% pull("income") 
+income_df_train_x = income_df_train %>% select(-c("income"))
+
+# Normalize x variables since they are at different scale
+income_df_train_x$age <- normalize(income_df_train_x$age)
+income_df_train_x$educationYears <- normalize(income_df_train_x$educationYears)
+income_df_train_x$workHours <- normalize(income_df_train_x$workHours)
+
+
+```
+
+
+## 1.2 Load the test data set and do the same pre-processing
+
+```{r }
+
+#import the file using #read the CSV file into a data frame 'income_df'
+income_df_test <- read_csv("test-baggle.csv", col_types = "nnffnfffffnff")
+income_df_test <- income_df_test %>%
+  mutate(workClassification = recode(workClassification, "?" = "UNK")) %>%
+  mutate(nativeCountry = recode(nativeCountry, "?" = "UNK")) %>%
+  mutate(occupation = recode(occupation, "?" = "UNK")) 
+
+#create a data frame called 'income_df_test_x' using the same steps as above
+income_df_test_y = income_df_test %>% pull("income") 
+income_df_test_x = income_df_test %>% select(-c("Id", "income"))
+
+# Normalize x variables since they are at different scale
+income_df_test_x$age <- normalize(income_df_test_x$age)
+income_df_test_x$educationYears <- normalize(income_df_test_x$educationYears)
+income_df_test_x$workHours <- normalize(income_df_test_x$workHours)
+```
+
+
+## 1.3 Split the data into trainig and validation
+```{r }
+
+# from the train csv, split 75% for training, 25% for testing
+smp_size <- floor(0.75 * nrow(income_df_train_x))
+
+# randomly select row numbers for training data set
+set.seed(23456)
+train_ind <- sample(seq_len(nrow(income_df_train_x)), size = smp_size)
+
+# creating validate and training sets for x
+train_x <- income_df_train_x[train_ind, ]
+validate_x <- income_df_train_x[-train_ind, ]
+
+# creating test and training sets for y
+train_y <- income_df_train_y[train_ind]
+validate_y <- income_df_train_y[-train_ind]
+
+```
+
+## 1.4 Fit a model (or multiple models) on the training data
+```{r  message=FALSE,  warning=FALSE}
+
+#
+# kNN
+#
+train_nonfactors_x <- data.frame(train_x) #convert from a tibble to a data frame
+train_nonfactors_x <- dummy.data.frame(data=train_nonfactors_x, sep="_")  #does one-hot encoding
+
+cross_validation <- trainControl(## 10-fold CV
+                                method = "repeatedcv",
+                                number = 10,
+                                ## repeated three times
+                                repeats = 3)
+Param_Grid <-  expand.grid( k = 1:10)
+
+# fit the model to training data
+income_df_train_y_small = income_df_train_y[1:100]
+income_df_train_x_small = train_nonfactors_x[1:100,]
+knn_clf_fit <- train(train_nonfactors_x,
+                     train_y,
+                     method = "knn",
+                     tuneGrid = Param_Grid,
+                     trControl = cross_validation
+                     )
+
+# check the accuracy for different models
+knn_clf_fit
+```
+
+```{r}
+# decision tree
+#
+# Cross validation 
+cross_validation <- trainControl(## 10-fold CV
+                                method = "repeatedcv",
+                                number = 10,
+                                ## repeated three times
+                                repeats = 3)
+Param_Grid <-  expand.grid(maxdepth = 2:10)
+# fit the model to training data
+dtree_fit <- train(train_x,
+                   train_y, 
+                   method = "rpart2",
+                   # split - criteria to split nodes
+                   parms = list(split = "gini"),
+                  tuneGrid = Param_Grid,
+                   trControl = cross_validation,
+                  # preProc -  perform listed pre-processing to predictor dataframe
+                   preProc = c("center", "scale"))
+
+# depth=6, accuracy=0.8258088
+dtree_fit
+```
+
+
+```{r }
+# print the final model
+dtree_fit$finalModel
+```
+
+
+```{r }
+# Plot decision tree
+prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+```
+
+
+```{r}
+# Predict on test data
+dtree_predict <- predict(dtree_fit, newdata = train_x)
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc
+confusionMatrix(dtree_fit, train_y, positive = "1" )
+# Add results into clf_results dataframe
+x2 <- confusionMatrix(dtree_fit,  train_y )[["overall"]]
+y2 <- confusionMatrix(dtree_fit,  train_y )[["byClass"]]
+clf_results[nrow(clf_results) + 1,] <-  list(Model = "Decision Tree",
+                                             Accuracy = round (x2[["Accuracy"]],3),
+                                            Precision = round (y2[["Precision"]],3),
+                                            Recall = round (y2[["Recall"]],3),
+                                            F1 = round (y2[["F1"]],3))
+# Print Accuracy and F1 score
+cat("Accuarcy is ", round(x2[["Accuracy"]],3), "and F1 is ", round (y2[["F1"]],3)  )
+# Add results into cost_benefit_df dataframe for cost benefit analysis
+a2 <- confusionMatrix(dtree_predict,  train_y )
+cost_benefit_df[nrow(cost_benefit_df) + 1,] <-  list(Model = "Decision Tree",
+                                             TP = a2[["table"]][1],
+                                             FN = a2[["table"]][2],
+                                             FP = a2[["table"]][3],
+                                             TN = a2[["table"]][4])
+```
+
+
+```{r}
+# Linear regression
+#
+glm_fit <- train(train_x,
+                 train_y, 
+                 method = "glm",
+                 family = "binomial",
+                 preProc = c("center", "scale"))
+
+# accuracy 0.834
+glm_fit
+```
+
+## 1.5 Evaluate on validation data
+
+Look at the model performance on validation data. Various commands to look at the models' performance on the validation data. Note that you dont have the test data set's true values. Only I have them and I will give you the total profit after you upload your predictions
+
+```{r }
+
+evaluate_model <- function(model_to_use, test_data, actual_data) {
+  predict_data <- predict(model_to_use, newdata = test_data)
+  confusionMatrix(predict_data, actual_data, positive="1")
+
+  a5 <-confusionMatrix(predict_data, actual_data, positive="1")
+  x1 <- a5[["overall"]]
+  y3 <- a5[["byClass"]]
+  cat("Recall of positive class is", round (y3[["Recall"]],3), "\n")
+  cat("Precision of positive class is", round (y3[["Precision"]],3), "\n")
+  cat("F score of positive class is", round (y3[["F1"]],3), "\n")
+
+  TP = a5[["table"]][4]
+  FP = a5[["table"]][2]
+  FN = a5[["table"]][3]
+  TN = a5[["table"]][1]
+  
+  #calculate profit
+  profit <- TP*1400 - FP*1200 - FN*800 + TN*10
+  cat("Total profit: ", profit)
+}
+
+cat("DECISION TREE:\n")
+evaluate_model(dtree_fit, validate_x, validate_y)
+
+cat("LINEAR REGRESSION:\n")
+evaluate_model(glm_fit, validate_x, validate_y)
+
+cat("kNN:\n")
+validate_nonfactors_x <- data.frame(validate_x) #convert from a tibble to a data frame
+validate_nonfactors_x <- dummy.data.frame(data=validate_nonfactors_x, sep="_")  #does one-hot encoding
+evaluate_model(knn_clf_fit, validate_nonfactors_x, validate_y)
+
+
+## assumes you have a data frame y_validation_pred_num 
+##which is the output prediction on validation set in factor form using your chosen threshold
+
+## assumes you have data frames 'income_df_validation_y' and 'income_df_validation_y' 
+## based on a 75% - 25% split of the training set into train and validation
+
+##Print Confusion matrix, Accuracy, Sensitivity etc 
+##first 2 arguments should be factors: prediction and actual
+
+##make class '1' as the positive class
+
+
+
+# 
+# #calculate AUC
+# 
+# 
+
+# pred1 <- prediction(y_validation_pred_num, income_df_validation_y)
+# rocs <- performance(pred1, "tpr", "fpr")
+# 
+# # calculate AUC for all models
+# AUC_models <- performance(pred1, "auc")
+# auc_logistic = round(AUC_models@y.values[[1]], 3)
+# cat("AUC is", auc_logistic)
+# 
+# 
+# #unpack the confusion matrix
+# 
+```
+
+
+## 1.6 if you have landed on a model you can predict on the test data and save your solution
+```{r }
+
+model_to_use = glm_fit
+
+# shows you sample code if your best model was yyy_fit. 
+# Predict on test data
+yyy_predict <- predict(model_to_use, newdata = income_df_test_x)
+#predict probabilties
+yyy_predict_prob <- predict(model_to_use, newdata = income_df_test_x, type="prob")
+
+```
+
+## 1.7 Convert probability outcome into categorical outcome based on a choice of threshold
+
+```{r }
+#here is an example with a 0.5 threshold. this is also the default in R
+#you can set any threshold between 0 and 1
+#you may find that profit/performance is different for different thresholds
+
+y_pred_num <- ifelse(yyy_predict_prob[,2] > 0.5, 1, 0)
+y_pred_factor <- as.factor(ifelse(yyy_predict_prob[,2] > 0.5, "1", "0"))
+```
+
+
+# 2. get ready to submit scored solution for contest
+```{r}
+
+#these are all the teams -- copy and paste your team and ignore the others
+#"BannerAI", "CEOPredictions","FinancialDatawESG", "ImprovingHealthcare",
+#"MapChange", "MediaAssetFairValueEstimator", "SmarketingB2BFunnel",
+#"Vertex", "WalmartChannelOptimization"
+
+filename <- "Anheuser-BuschInBev.csv"
+
+scoreAllOne <- y_pred_factor  #assuming your prediction in factor form is in y_pred_factor
+Id <- seq(1,nrow(income_df_test),1) #this is just the index number
+
+tempScoreFrame <- data.frame(Id, scoreAllOne) #create a new data frame with 2 columns
+names(tempScoreFrame) <- c("Id", "income") #give names to the 2 columns
+
+
+write.csv(tempScoreFrame, filename, row.names=FALSE)
+
+#check this file in Excel to see it looks ok
+#upload this to Classes under competition assignment for day 1 and day 2
+
+
+```
